@@ -1,0 +1,16 @@
+[package]
+name = "hadusos-protocol"
+version = "0.1.0"
+edition = "2021"
+
+authors = ["Zhiyao Ma"]
+
+[dependencies]
+static_assertions = "1.1.0"
+
+[dependencies.crc32fast]
+version = "1.4.2"
+default-features = false
+
+[dev-dependencies]
+crossbeam = "0.8.4"
