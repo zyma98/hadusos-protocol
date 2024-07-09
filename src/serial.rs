@@ -9,10 +9,10 @@ pub trait Serial {
 
     /// Read a byte from the serial device with a timeout.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `timeout_ms`: Timeout in milliseconds.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(u8)`: The byte read.
     /// - `Err([SerialError])`: An error occurred.
     fn read_byte_with_timeout(
@@ -22,10 +22,10 @@ pub trait Serial {
 
     /// Write a byte to the serial device.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `byte`: The byte to write.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(())`: The byte was written successfully.
     /// - `Err(SerialError)`: An error occurred.
     fn write_byte(

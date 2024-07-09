@@ -264,7 +264,7 @@ impl<RE, WE> From<LinkError<RE, WE>> for PacketError<RE, WE> {
 impl<'a> Packet<'a> {
     /// Construct a send request packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `session_num`: Identifies the session which the sender attempts to
     ///   establish.
     pub(crate) fn build_send_request(data_len: u16, session_num: u16) -> Self {
@@ -280,7 +280,7 @@ impl<'a> Packet<'a> {
 
     /// Construct a send clearance packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `session_num`: Identifies the session which the receiver clears the
     ///   sender to proceed.
     pub(crate) fn build_send_clearance(session_num: u16) -> Self {
@@ -293,7 +293,7 @@ impl<'a> Packet<'a> {
 
     /// Construct a data packet for the sender to deliver data.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `sequence`: Alternates between [`Sequence::Even`] and
     ///   [`Sequence::Odd`] to distinguish between new and retransmitted data.
     /// - `buffer`: Data to be transmitted. All data packets from the sender
@@ -312,7 +312,7 @@ impl<'a> Packet<'a> {
     /// Construct a data packet for the receiver to `ack` the previously
     /// received data packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `sequence`: The sequence number of the previously received data
     ///   packet.
     pub(crate) fn build_ack(sequence: Sequence) -> Self {
@@ -326,7 +326,7 @@ impl<'a> Packet<'a> {
     /// Construct a data packet for the receiver to `nack` the previously
     /// received data packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `sequence`: The sequence number of the previously received data
     ///   packet.
     pub(crate) fn build_nack(sequence: Sequence) -> Self {
@@ -348,10 +348,10 @@ impl<'a> Packet<'a> {
 
     /// Send the packet. This operation should not block.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `link`: A link layer instance.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(())`: Packet sent successfully.
     /// - `Err(PacketError)`: An error occurred.
     pub(crate) fn send<S, T>(
@@ -394,7 +394,7 @@ impl<'a> Packet<'a> {
 
     /// Receive a packet or timeout.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `link`: A link layer instance.
     /// - `client_buf`: Buffer provided by the client to receive data in case
     ///   the received packet is a data packet. Set to `None` if the client
@@ -404,7 +404,7 @@ impl<'a> Packet<'a> {
     /// - `scratchpad`: An opaque object that the client should pass in while
     ///   receiving a packet.
     ///
-    /// ### Returns
+    /// # Returns
     /// - Ok(Packet): The successfully received packet.
     /// - Err(PacketError): An error occurred.
     pub(crate) fn receive<'b, S, T>(
@@ -553,10 +553,10 @@ impl<'a> Packet<'a> {
     /// Parse the given bytes as a packet header. Report error if the given
     /// bytes does not match recognizable bit patterns.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `header_buf`: The bytes to be parsed as a header.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok((Sequence, Acknowledge, PacketType))`: Parsed header fields.
     /// - `Err(PacketError)`: An error occurred during parsing.
     fn parse_header<S>(
@@ -594,13 +594,13 @@ impl<'a> Packet<'a> {
 
     /// Parse the content of a send request packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `byte_cnt`: The number of bytes read from the link layer.
     /// - `sequence`: The parsed sequence number.
     /// - `acknowledge`: The parsed acknowledge field.
     /// - `buffer`: The bytes to be parsed as the send request content.
     ///
-    /// ### Returns
+    /// # Returns
     /// - Ok(Packet): A send request packet.
     /// - Err(PacketError): An error occurred during parsing.
     fn parse_send_request<'b, 'c, S>(
@@ -645,13 +645,13 @@ impl<'a> Packet<'a> {
 
     /// Parse the content of a send clearance packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `byte_cnt`: The number of bytes read from the link layer.
     /// - `sequence`: The parsed sequence number.
     /// - `acknowledge`: The parsed acknowledge field.
     /// - `buffer`: The bytes to be parsed as the send clearance content.
     ///
-    /// ### Returns
+    /// # Returns
     /// - Ok(Packet): A send clearance packet.
     /// - Err(PacketError): An error occurred during parsing.
     fn parse_send_clearance<'b, 'c, S>(
@@ -695,7 +695,7 @@ impl<'a> Packet<'a> {
     /// is zero. Or it might be a packet from the receiver to the sender
     /// carrying `ack` or `nack`, in which case the content length is zero.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `byte_cnt`: The number of bytes read from the link layer.
     /// - `sequence`: The parsed sequence number.
     /// - `acknowledge`: The parsed acknowledge field.
@@ -704,7 +704,7 @@ impl<'a> Packet<'a> {
     /// - `crc_buf`: The bytes to be parsed as a crc32 checksum.
     /// - `backup_is_active`: Whether the `active_buf` is the backup buffer.
     ///
-    /// ### Returns
+    /// # Returns
     /// - Ok(Packet): A data packet or an acknowledge packet.
     /// - Err(PacketError): An error occurred during parsing.
     fn parse_data<'c, S>(
@@ -778,12 +778,12 @@ impl<'a> Packet<'a> {
 
     /// Parse the content of a reset packet.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `byte_cnt`: The number of bytes read from the link layer.
     /// - `sequence`: The parsed sequence number.
     /// - `acknowledge`: The parsed acknowledge field.
     ///
-    /// ### Returns
+    /// # Returns
     /// - Ok(Packet): A reset packet.
     /// - Err(PacketError): An error occurred during parsing.
     fn parse_reset<S>(
@@ -828,11 +828,11 @@ impl<'a> Packet<'a> {
     /// must be even smaller. Thus, as long as the client provided buffer is
     /// able to hold the received data, the provided buffer must also be.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `client_buf`: The buffer optionally provided by the client.
     /// - `backup_buf`: The backup buffer.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `.0`: The chosen buffer.
     /// - `.1`: Whether the backup buffer is chosen.
     fn pick_buffer<'b>(

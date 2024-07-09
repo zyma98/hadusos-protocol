@@ -143,6 +143,13 @@ where
     /// Return a closure to get updated timeout based on elapsed time. When
     /// the returned closure is called, it returns the remaining time until
     /// timeout. The timeout counts from the creation time of the closure.
+    ///
+    /// # Returned Closure Parameters
+    /// - `timer`: A mutable reference to a [`Timer`] instance.
+    ///
+    /// # Returned Closure Returns
+    /// - `Ok(u32)`: Remaining timeout in milliseconds.
+    /// - [`Err(LinkError::Timeout)`](LinkError): The given timeout has expired.
     fn get_timeout_update_func(
         &mut self,
         timeout_ms: u32,
@@ -172,10 +179,10 @@ where
     /// Send a frame composed from multiple byte slices. The byte slices will
     /// be flattened during sending.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `buffers`: Array of byte slices to send.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(())`: Frame sent successfully.
     /// - `Err(LinkError)`: An error occurred.
     pub(crate) fn send_frame(
@@ -226,10 +233,10 @@ where
 
     /// Read a byte with a timeout and remove escape if necessary.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `timeout_ms`: Timeout in milliseconds.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(ReadByteResult::Byte(byte))`: Byte read successfully.
     /// - `Ok(ReadByteResult::Finish)`: Identified a postamble and no byte was
     ///    read.
@@ -262,8 +269,8 @@ where
 
         loop {
             // Read the next byte with updated timeout.
-            let updated_timeout = update_timeout(&mut self.timer)?;
-            byte = self.serial.read_byte_with_timeout(updated_timeout)?;
+            let remaining_timeout = update_timeout(&mut self.timer)?;
+            byte = self.serial.read_byte_with_timeout(remaining_timeout)?;
 
             match byte {
                 // In rare cases the actual escaped byte is lost and we see
@@ -295,11 +302,11 @@ where
     /// number of bytes received in the frame but not that stored to the
     /// buffers.
     ///
-    /// ### Parameters
+    /// # Parameters
     /// - `buffers`: Mutable array of byte slices to store the received frame.
     /// - `timeout_ms`: Timeout in milliseconds.
     ///
-    /// ### Returns
+    /// # Returns
     /// - `Ok(usize)`: Number of bytes received (after removing escape).
     /// - `Err(LinkError)`: An error occurred.
     pub(crate) fn receive_frame_with_timeout(
@@ -311,9 +318,9 @@ where
 
         // Wait until we see a preamble. Discard all previous bytes.
         loop {
-            let updated_timeout = update_timeout(&mut self.timer)?;
+            let remaining_timeout = update_timeout(&mut self.timer)?;
             if let ReadByteResult::Start =
-                self.read_byte_with_timeout_remove_escape(updated_timeout)?
+                self.read_byte_with_timeout_remove_escape(remaining_timeout)?
             {
                 break;
             }
@@ -331,9 +338,9 @@ where
             // Fill the given buffers in order.
             for buffer in buffers.iter_mut() {
                 for byte_ref in buffer.iter_mut() {
-                    let updated_timeout = update_timeout(&mut self.timer)?;
+                    let remaining_timeout = update_timeout(&mut self.timer)?;
 
-                    match self.read_byte_with_timeout_remove_escape(updated_timeout)? {
+                    match self.read_byte_with_timeout_remove_escape(remaining_timeout)? {
                         // Fill the buffer if we get a data byte.
                         ReadByteResult::Byte(byte) => {
                             *byte_ref = byte;
@@ -364,9 +371,9 @@ where
             // If the buffers are filled up but we have not reached the maximum
             // frame size, continue to read bytes but discard them.
             while byte_cnt < MAX_FRAME_PAYLOAD_SIZE {
-                let updated_timeout = update_timeout(&mut self.timer)?;
+                let remaining_timeout = update_timeout(&mut self.timer)?;
 
-                match self.read_byte_with_timeout_remove_escape(updated_timeout)? {
+                match self.read_byte_with_timeout_remove_escape(remaining_timeout)? {
                     // Discard the read byte but still increment the counter.
                     ReadByteResult::Byte(_) => byte_cnt += 1,
                     // Restart reading if we see another preamble. We will read
@@ -385,11 +392,11 @@ where
                 continue;
             }
 
-            let updated_timeout = update_timeout(&mut self.timer)?;
+            let remaining_timeout = update_timeout(&mut self.timer)?;
 
             // The number of bytes read has reached the maximum frame size. We
             // expect to see only the postamble byte.
-            match self.read_byte_with_timeout_remove_escape(updated_timeout)? {
+            match self.read_byte_with_timeout_remove_escape(remaining_timeout)? {
                 // Got the postamble. The frame ends. Return.
                 ReadByteResult::Finish => return Ok(byte_cnt),
                 // Restart reading if we see another preamble. We will read
