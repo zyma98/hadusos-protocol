@@ -39,6 +39,7 @@ pub trait Serial {
 /// NOTE: When the read operation on the serial device times out, it must
 /// return the [`Timeout`](SerialError::Timeout) variant rather than the
 /// [`ReadError`](SerialError::ReadError) variant.
+#[derive(Debug)]
 pub enum SerialError<RE, WE> {
     ReadError(RE),
     WriteError(WE),

@@ -78,6 +78,23 @@ impl<RE, WE> From<SerialError<RE, WE>> for LinkError<RE, WE> {
     }
 }
 
+// use core::fmt::Debug;
+
+// impl<RE, WE> Debug for LinkError<RE, WE>
+// where
+//     RE: Debug,
+//     WE: Debug,
+// {
+//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+//         match self {
+//             Self::SerialReadErr(arg0) => f.debug_tuple("SerialReadErr").field(arg0).finish(),
+//             Self::SerialWriteErr(arg0) => f.debug_tuple("SerialWriteErr").field(arg0).finish(),
+//             Self::Timeout => write!(f, "Timeout"),
+//             Self::Overrun => write!(f, "Overrun"),
+//         }
+//     }
+// }
+
 /// Outcome of reading a byte (after removing escape) from the serial device.
 enum ReadByteResult {
     /// Got a data byte, possibly after removing escape.
@@ -416,155 +433,162 @@ where
     }
 }
 
-/// Tests for link module
-/// Implement a simple timer which always return a timestamp 0 
-/// and use a queue to mock the serial behavior.
+/// Unit tests for the [`link`](crate::link) module.
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use super::*;
+    use std::collections::VecDeque;
 
-    struct MockTimer;
-    impl MockTimer {
-        pub fn new() -> Self {
-            Self
-        }
-    }
-    impl Timer for MockTimer {
+    /// A simulated timer that always return 0 as the timestamp. Thus when
+    /// using this timer the operations will never time out.
+    struct DummyTimer;
+
+    impl Timer for DummyTimer {
         fn get_timestamp_ms(&mut self) -> u32 {
             0
         }
     }
 
-    struct MockSerial {
-        buffer: VecDeque<u8>
+    /// A simulated loopback serial device. Bytes written to it can be read
+    /// out again.
+    struct LoopbackSerial {
+        buffer: VecDeque<u8>,
     }
-    impl MockSerial {
-        pub fn new() -> Self {
+
+    impl LoopbackSerial {
+        fn new() -> Self {
             Self {
-                buffer: VecDeque::new()
+                buffer: VecDeque::new(),
             }
         }
-        // Make it easier to check data in the buffer
-        pub fn get_buffer_data(&self) -> Vec<u8> {
-            self.buffer.iter().copied().collect()
+
+        /// View bufferred data as a mutable slice.
+        fn get_buffer_data(&mut self) -> &mut [u8] {
+            self.buffer.make_contiguous()
         }
     }
-    impl Serial for MockSerial {
+
+    impl Serial for LoopbackSerial {
         type ReadError = ();
         type WriteError = ();
 
-        #[allow(unused_variables)]
         fn read_byte_with_timeout(
-                &mut self,
-                timeout_ms: u32,
-            ) -> Result<u8, SerialError<Self::ReadError, Self::WriteError>> {
+            &mut self,
+            _timeout_ms: u32,
+        ) -> Result<u8, SerialError<Self::ReadError, Self::WriteError>> {
             self.buffer.pop_front().ok_or(SerialError::ReadError(()))
         }
 
         fn write_byte(
-                &mut self,
-                byte: u8,
-            ) -> Result<(), SerialError<Self::ReadError, Self::WriteError>> {
+            &mut self,
+            byte: u8,
+        ) -> Result<(), SerialError<Self::ReadError, Self::WriteError>> {
             self.buffer.push_back(byte);
             Ok(())
         }
     }
 
-
+    /// Simple Test: Send "Hello, World" and receive "Hello, World".
     #[test]
-    // Simple Test: send 'Hello, World' and recv 'Hello, World'
-    fn link_hello_world() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn hello_world() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
         let data: &[u8] = b"Hello, World";
-        let send_buffers: &[&[u8]] = &[data]; 
-    
-        let send_ret = link.send_frame(send_buffers);
-        assert!(send_ret.is_ok());
-    
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 12]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
-    
+        link.send_frame(&[data]).unwrap();
+
+        let mut recv_buffer = [0u8; 12];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
+
         assert_eq!(recv_len, data.len());
-        assert_eq!(recv_buffers[0], data);
+        assert_eq!(recv_buffer, data);
     }
 
+    /// Simple Test: Send all special values ([`PREAMBLE`], [`ESCAPE`],
+    /// [`POSTAMBLE`], and [`XOR_PATTERN`]), and check whether they are
+    /// correctly escaped or not.
     #[test]
-    // Simple Test: send all special value(PREAMBLE ESCAPE POSTAMBLE XOR_PATTEN), and check whether 
-    // they are correctly escaped or not
-    fn link_escape_simple() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn escape_simple() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        let data: &[u8] = &[PREAMBLE, POSTAMBLE, ESCAPE, XOR_PATTERN];
-        let send_buffers: &[&[u8]] = &[data]; 
-    
-        let send_ret = link.send_frame(send_buffers);
-        assert!(send_ret.is_ok());
-    
-        let expected_data = &[PREAMBLE, ESCAPE, PREAMBLE^XOR_PATTERN, ESCAPE, POSTAMBLE^XOR_PATTERN, ESCAPE, ESCAPE^XOR_PATTERN, XOR_PATTERN, POSTAMBLE];
+        let data = [PREAMBLE, POSTAMBLE, ESCAPE, XOR_PATTERN];
+        link.send_frame(&[&data]).unwrap();
 
-        assert_eq!(expected_data.to_vec(), link.serial.get_buffer_data());
+        let expected_data = &[
+            PREAMBLE,
+            ESCAPE,
+            PREAMBLE ^ XOR_PATTERN,
+            ESCAPE,
+            POSTAMBLE ^ XOR_PATTERN,
+            ESCAPE,
+            ESCAPE ^ XOR_PATTERN,
+            XOR_PATTERN,
+            POSTAMBLE,
+        ];
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 4]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
+        assert_eq!(expected_data, link.serial.get_buffer_data());
+
+        let mut recv_buffer = [0u8; 4];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
 
         assert_eq!(recv_len, 4);
         assert_eq!(recv_len, data.len());
-        assert_eq!(recv_buffers[0], data);
+        assert_eq!(recv_buffer, data);
     }
 
+    /// Extensive Test: Send all possible 8-bit data, and check whether they
+    /// are correctly escaped or not.
     #[test]
-    // Extensive Test: send all possible 8-bit data, and check whether they are correctly 
-    // escaped or not.
-    fn link_escape_extensive() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn escape_extensive() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        let all_bytes: Vec<u8> = (0..=255).collect();
-        for &byte in &all_bytes {
-            let send_buffers = &[&[byte][..]];
-            let send_ret = link.send_frame(send_buffers);
-            assert!(send_ret.is_ok());
+        for byte in 0..=255 {
+            link.send_frame(&[&[byte]]).unwrap();
 
             let buffer_data = link.serial.get_buffer_data();
 
-            let expected_data = if need_escape(byte) {
-                vec![PREAMBLE, ESCAPE, byte ^ XOR_PATTERN, POSTAMBLE]
+            if need_escape(byte) {
+                assert_eq!(
+                    buffer_data,
+                    [PREAMBLE, ESCAPE, byte ^ XOR_PATTERN, POSTAMBLE]
+                );
             } else {
-                vec![PREAMBLE, byte, POSTAMBLE]
+                assert_eq!(buffer_data, [PREAMBLE, byte, POSTAMBLE]);
             };
-            assert_eq!(buffer_data, expected_data);
 
-            let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 1]];
-            let recv_ret = link.receive_frame_with_timeout(&mut recv_buffers, 1000);
+            let mut recv_buffers = [0u8; 1];
+            let recv_len = link
+                .receive_frame_with_timeout(&mut [&mut recv_buffers], 1000)
+                .unwrap();
 
-            assert!(recv_ret.is_ok());
-            assert_eq!(recv_ret.unwrap(), 1);
-            assert_eq!(recv_buffers[0][0], byte);
+            assert_eq!(recv_len, 1);
+            assert_eq!(recv_buffers[0], byte);
         }
     }
 
+    /// Simple Test: Send more than [`MAX_FRAME_PAYLOAD_SIZE`] bytes, expecting
+    /// [`LinkError::Overrun`].
     #[test]
-    // Simple Test: send more than MAX_FRAME_PAYLOAD_SIZE data, expect LinkError::Overrun.
-    fn link_send_overrun() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn send_overrun() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        let data: &[u8] = &[PREAMBLE; 100];
-        let send_buffers: &[&[u8]] = &[data]; 
-    
-        let send_ret = link.send_frame(send_buffers);
+        let data = [PREAMBLE; 100];
+        let send_res = link.send_frame(&[&data]);
 
-        match send_ret {
+        match send_res {
             Err(LinkError::Overrun) => (),
-            _ => panic!("Should Overrun!")
+            _ => panic!("Should Overrun!"),
         }
 
         let mut expected_data = Vec::with_capacity(130);
@@ -577,156 +601,157 @@ mod tests {
 
         let buffer_data = link.serial.get_buffer_data();
 
-        println!("{}", buffer_data.len());
-        assert_eq!(buffer_data.len(), expected_data.len());
         assert_eq!(buffer_data, expected_data);
     }
 
+    /// Simple Test: Receive more than [`MAX_FRAME_PAYLOAD_SIZE`] bytes,
+    /// expecting [`LinkError::Overrun`].
     #[test]
-    #[allow(unused)]
-    // Simple Test: receive more than MAX_FRAME_PAYLOAD_SIZE data, expect LinkError::Overrun.
-    fn link_recv_overrun() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn recv_overrun() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        link.serial.write_byte(PREAMBLE);
-
+        link.serial.write_byte(PREAMBLE).unwrap();
         for _ in 0..64 {
             for &byte in b"Hello, World" {
-                link.serial.write_byte(byte);
+                link.serial.write_byte(byte).unwrap();
             }
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 64]];
-        let recv_ret = link.receive_frame_with_timeout(&mut recv_buffers, 1000);
+        let mut recv_buffer = [0u8; 64];
+        let recv_res = link.receive_frame_with_timeout(&mut [&mut recv_buffer], 1000);
 
-        match recv_ret {
+        match recv_res {
             Err(LinkError::Overrun) => (),
-            _ => panic!("Should Overrun!")
+            _ => panic!("Should Overrun!"),
         }
     }
 
+    /// Simple Test: Send multiple [`PREAMBLE`] and check whether the bytes
+    /// before the last [`PREAMBLE`] are correctly discarded.
     #[test]
-    #[allow(unused)]
-    // Simple Test: send multiple PREAMBLE, check whether bytes before the last PREAMBLE
-    // would be correctly discarded.
-    fn link_recv_restart() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn recv_restart() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        link.serial.write_byte(PREAMBLE);
-
+        link.serial.write_byte(PREAMBLE).unwrap();
         for &byte in b"Should Discard!" {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
-        link.serial.write_byte(PREAMBLE);
+        link.serial.write_byte(PREAMBLE).unwrap();
         for &byte in b"Should Receive!" {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 15]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
+        let mut recv_buffer = [0u8; 15];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
+
         assert_eq!(recv_len, 15);
-        assert_eq!(recv_buffers[0], b"Should Receive!");
+        assert_eq!(&recv_buffer, b"Should Receive!");
     }
 
+    /// Simple Test: When receive buffer is limited, discard the overflowing
+    /// bytes, but still count all received bytes.
     #[test]
-    #[allow(unused)]
-    // Simple Test: When recv_buffer is limited, discard the bytes. But still count recvd bytes.
-    fn link_recv_buffer_overflow() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn recv_buffer_overflow() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        link.serial.write_byte(PREAMBLE);
+        link.serial.write_byte(PREAMBLE).unwrap();
         for &byte in b"Fill up the buffer!" {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
         for &byte in b"overflow overflow!" {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 19]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
-        // recv_len should be the length of "Fill up the buffer!overflow overflow!"
+        let mut recv_buffers = [0u8; 19];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffers], 1000)
+            .unwrap();
+
+        // `recv_len` should be the length of "Fill up the buffer!overflow overflow!"
         assert_eq!(recv_len, 37);
-        assert_eq!(recv_buffers[0], b"Fill up the buffer!");
+        assert_eq!(&recv_buffers, b"Fill up the buffer!");
     }
 
+    // Simple Test: Begin receiving bytes after getting a `PREAMBLE`.
     #[test]
-    #[allow(unused)]
-    // Simple Test: Begin receive bytes till get a PREAMBLE.
-    fn link_recv_till_preamble() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn recv_after_preamble() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
         for &byte in b"Can't be received." {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
-        link.serial.write_byte(PREAMBLE);
+        link.serial.write_byte(PREAMBLE).unwrap();
         for &byte in b"Can be received!" {
-            link.serial.write_byte(byte);
+            link.serial.write_byte(byte).unwrap();
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 16]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
+        let mut recv_buffer = [0u8; 16];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
 
         assert_eq!(recv_len, 16);
-        assert_eq!(recv_buffers[0], b"Can be received!");
+        assert_eq!(&recv_buffer, b"Can be received!");
     }
 
+    // Simple Test: Receive data with max frame size.
     #[test]
-    #[allow(unused)]
-    // Simple Test: send data with max frame size.
-    fn link_recv_max_frame_size() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    fn recv_max_frame_size() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        link.serial.write_byte(PREAMBLE);
+        link.serial.write_byte(PREAMBLE).unwrap();
         for _ in 0..64 {
-            link.serial.write_byte(ESCAPE);
-            link.serial.write_byte(ESCAPE^XOR_PATTERN);
+            link.serial.write_byte(ESCAPE).unwrap();
+            link.serial.write_byte(ESCAPE ^ XOR_PATTERN).unwrap();
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 128]];
-        let recv_ret = link.receive_frame_with_timeout(&mut recv_buffers, 1000);
-    
-        assert!(recv_ret.is_ok());
-        assert_eq!(recv_ret.unwrap(), 64);
+        let mut recv_buffer = [0u8; 128];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
+
+        assert_eq!(recv_len, 64);
     }
 
     #[test]
-    #[allow(unused)]
-    // Simple Test: send bytes contains [ESCAPE ESCAPE DATA]
-    fn link_recv_multiple_escape() {
-        let serial = MockSerial::new();
-        let timer = MockTimer::new();
+    /// Simple Test: Receive data containing consecutive [`ESCAPE`], which
+    /// should have the effect as a single [`ESCAPE`].
+    fn recv_multiple_escape() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyTimer;
         let mut link = Link::new(serial, timer);
 
-        link.serial.write_byte(PREAMBLE);
+        link.serial.write_byte(PREAMBLE).unwrap();
         for &byte in b"Multiple ESCAPE" {
-            link.serial.write_byte(ESCAPE);
-            link.serial.write_byte(ESCAPE);
-            link.serial.write_byte(byte ^ XOR_PATTERN);
+            link.serial.write_byte(ESCAPE).unwrap();
+            link.serial.write_byte(ESCAPE).unwrap();
+            link.serial.write_byte(byte ^ XOR_PATTERN).unwrap();
         }
-        link.serial.write_byte(POSTAMBLE);
+        link.serial.write_byte(POSTAMBLE).unwrap();
 
-        let mut recv_buffers:[&mut [u8]; 1] = [&mut [0u8; 15]];
-        let recv_len = link.receive_frame_with_timeout(&mut recv_buffers, 1000).unwrap();
-    
+        let mut recv_buffer = [0u8; 15];
+        let recv_len = link
+            .receive_frame_with_timeout(&mut [&mut recv_buffer], 1000)
+            .unwrap();
+
         assert_eq!(recv_len, 15);
-        assert_eq!(recv_buffers[0], b"Multiple ESCAPE");
+        assert_eq!(&recv_buffer, b"Multiple ESCAPE");
     }
-
 }
-
-
