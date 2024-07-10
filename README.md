@@ -8,7 +8,7 @@ Below shows an example.
 
 ```rust
 use crossbeam::channel::{self, Receiver, RecvError, SendError, Sender};
-use hadusos_protocol::{Serial, SerialError, Session, Timer};
+use hadusos::{Serial, SerialError, Session, Timer};
 use std::{
     sync::Arc,
     thread,
