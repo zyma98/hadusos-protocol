@@ -78,23 +78,6 @@ impl<RE, WE> From<SerialError<RE, WE>> for LinkError<RE, WE> {
     }
 }
 
-// use core::fmt::Debug;
-
-// impl<RE, WE> Debug for LinkError<RE, WE>
-// where
-//     RE: Debug,
-//     WE: Debug,
-// {
-//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-//         match self {
-//             Self::SerialReadErr(arg0) => f.debug_tuple("SerialReadErr").field(arg0).finish(),
-//             Self::SerialWriteErr(arg0) => f.debug_tuple("SerialWriteErr").field(arg0).finish(),
-//             Self::Timeout => write!(f, "Timeout"),
-//             Self::Overrun => write!(f, "Overrun"),
-//         }
-//     }
-// }
-
 /// Outcome of reading a byte (after removing escape) from the serial device.
 enum ReadByteResult {
     /// Got a data byte, possibly after removing escape.
