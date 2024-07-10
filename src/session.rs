@@ -1,3 +1,28 @@
+//! Implementation for half-duplex session handling. The figure below outlines
+//! the interaction between the sender and the receiver in time sequence.
+//!
+//! ```plain
+//!        |                                          |
+//!        |  send()                         listen() |
+//!        |--------+                      +----------|
+//!        |        |-----SEND REQUEST---->|          |
+//!        |        |                      +--------->|
+//!        |        |                                 |
+//!        |        |                       receive() |
+//!        |        |                      +----------|
+//!        |        |<---SEND CLEARANCE----|          |
+//! SENDER |        |                      |          | RECEIVER
+//!        |        |---------DATA-------->|          |
+//!        |        |<--------ACK----------|          |
+//!        |        |         ...          |          |
+//!        |        |---------DATA-------->|          |
+//!        |        |<--------ACK----------|          |
+//!        |        |                      |          |
+//!        |        |---------RESET------->|          |
+//!        |<-------+                      +--------->|
+//!        |                                          |
+//! ```
+
 use crate::{
     link::Link,
     packet::{self, Acknowledge, Packet, PacketContent, PacketError, Scratchpad, Sequence},
@@ -36,6 +61,7 @@ pub enum SessionError<RE, WE> {
     BufferSizeMismatch,
 }
 
+#[doc(hidden)]
 /// Implement conversion from [`PacketError`] to [`SessionError`].
 impl<RE, WE> From<PacketError<RE, WE>> for SessionError<RE, WE> {
     fn from(pe: PacketError<RE, WE>) -> Self {

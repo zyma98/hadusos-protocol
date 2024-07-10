@@ -1,3 +1,5 @@
+//! Implementation for session packets. See [`Packet`] for details.
+
 use crate::{
     link::{self, Link, LinkError},
     serial::Serial,
@@ -71,7 +73,7 @@ const ODD_ODD_8BIT_PATTERN: u8 = (ODD_4BIT_PATTERN << 4) | ODD_4BIT_PATTERN;
 /// non-zero content length, which is the data being sent. In contrast, the
 /// `data` packets from the receiver have zero content length, which is used to
 /// deliver `ack` or `nack` confirmation. To reduce confusion, we call the
-/// `data` packet from the receiver to the sender as acknowledge packet.
+/// `data` packet from the receiver to the sender as the acknowledge packet.
 ///
 /// A `data` packet always carries as much data as possible, up to the `data`
 /// payload size limit ([`MAX_DATA_PACKET_PAYLOAD_SIZE`]). Since both
