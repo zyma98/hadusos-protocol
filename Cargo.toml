@@ -1,7 +1,10 @@
 [package]
-name = "hadusos-protocol"
-version = "0.1.0"
+name = "hadusos"
+version = "0.2.0"
 edition = "2021"
+license-file = "LICENSE"
+description = "Half-duplex session over serial."
+repository = "https://github.com/ZhiyaoMa98/hadusos-protocol"
 
 authors = ["Zhiyao Ma"]
 

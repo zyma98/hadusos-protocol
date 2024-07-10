@@ -1,4 +1,4 @@
-//! A half-duplex session protocol over serial.
+//! A half-duplex session over serial protocol.
 //!
 //! The client should provide a serial device instance and a timer instance,
 //! which respectively implements the [`Serial`] and [`Timer`] trait. Then, a

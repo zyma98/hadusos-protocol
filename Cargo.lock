@@ -74,8 +74,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22ec99545bb0ed0ea7bb9b8e1e9122ea386ff8a48c0922e43f36d45ab09e0e80"
 
 [[package]]
-name = "hadusos-protocol"
-version = "0.1.0"
+name = "hadusos"
+version = "0.2.0"
 dependencies = [
  "crc32fast",
  "crossbeam",
