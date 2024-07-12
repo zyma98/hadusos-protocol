@@ -237,6 +237,7 @@ impl Scratchpad {
 }
 
 /// Enumeration of possible packet errors.
+#[derive(Debug)]
 pub(crate) enum PacketError<RE, WE> {
     /// Error occurred during serial read.
     SerialReadErr(RE),
@@ -872,5 +873,321 @@ impl<'a> Packet<'a> {
             hasher.update(slice);
         }
         hasher.finalize().to_le_bytes()
+    }
+}
+
+/// Unit tests for the [`packet`](crate::packet) module.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serial::SerialError;
+    use std::collections::VecDeque;
+
+    /// A simulated timer that always returns 0 as the timestamp. Thus when
+    /// using this timer the operations will never time out.
+    struct DummyTimer;
+
+    impl Timer for DummyTimer {
+        fn get_timestamp_ms(&mut self) -> u32 {
+            0
+        }
+    }
+
+    /// A simulated timer that returns 0 as the timestamp on the first call to `get_timestamp_ms()`,
+    /// and returns [`u32::MAX`] on subsequent calls.
+    struct DummyExpiringTimer {
+        is_first_call: bool,
+    }
+
+    impl DummyExpiringTimer {
+        fn new() -> Self {
+            Self {
+                is_first_call: true,
+            }
+        }
+    }
+
+    impl Timer for DummyExpiringTimer {
+        fn get_timestamp_ms(&mut self) -> u32 {
+            if self.is_first_call {
+                self.is_first_call = false;
+                0
+            } else {
+                u32::MAX
+            }
+        }
+    }
+
+    /// A simulated loopback serial device. Bytes written to it can be read
+    /// out again.
+    struct LoopbackSerial {
+        buffer: VecDeque<u8>,
+    }
+
+    impl LoopbackSerial {
+        fn new() -> Self {
+            Self {
+                buffer: VecDeque::new(),
+            }
+        }
+    }
+
+    impl Serial for LoopbackSerial {
+        type ReadError = ();
+        type WriteError = ();
+
+        fn read_byte_with_timeout(
+            &mut self,
+            _timeout_ms: u32,
+        ) -> Result<u8, SerialError<Self::ReadError, Self::WriteError>> {
+            self.buffer.pop_front().ok_or(SerialError::ReadError(()))
+        }
+
+        fn write_byte(
+            &mut self,
+            byte: u8,
+        ) -> Result<(), SerialError<Self::ReadError, Self::WriteError>> {
+            self.buffer.push_back(byte);
+            Ok(())
+        }
+    }
+
+    /// Simple Test: Send "Hello, World" and receive "Hello, World".
+    #[test]
+    fn hello_world() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let buffer = b"Hello, World!";
+        let packet = Packet::build_data(Sequence::Even, buffer);
+
+        packet.send(&mut link).unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+        let client_buf = &mut [0u8; 13];
+
+        let recv = Packet::receive(&mut link, Some(client_buf), 1000, &mut scratchpad).unwrap();
+
+        assert_eq!(recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(recv.get_sequence(), Sequence::Even);
+
+        match recv.get_content() {
+            PacketContent::Data { buffer } => assert_eq!(buffer.unwrap(), b"Hello, World!"),
+            _ => panic!("Receive Error!"),
+        }
+    }
+
+    /// Simple Test: Use [`DummyExpiringTimer`] is check whether
+    /// the timeout mechanism can function well.
+    #[test]
+    fn timeout() {
+        let timer = DummyExpiringTimer::new();
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let packet = Packet::build_send_request(1, 1);
+
+        packet.send(&mut link).unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+
+        let recv = Packet::receive(&mut link, None, 1000, &mut scratchpad);
+
+        match recv {
+            Err(PacketError::Timeout) => (),
+            _ => panic!("Should Timeout!"),
+        }
+    }
+
+    /// Simple Test: Check whether the checksum mechanism can function well.
+    #[test]
+    fn checksum() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let buffer = b"The quick brown fox jumps over the lazy dog";
+        let packet = Packet::build_data(Sequence::Even, buffer);
+
+        link.send_frame(&[
+            &packet.header_to_le_bytes(),
+            buffer,
+            &Packet::get_checksum(&[b"The quick brown box jumps over the lazy dog"]),
+        ])
+        .unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+        let client_buf = &mut [0u8; 43];
+
+        let recv = Packet::receive(&mut link, Some(client_buf), 1000, &mut scratchpad);
+
+        match recv {
+            Err(PacketError::Clobbered) => (),
+            _ => panic!("Should Clobbered!"),
+        }
+    }
+
+    /// Simple Test: Test all kinds of PacketContent
+    #[test]
+    fn packet_content() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        // Test for PacketContent::SendRequest
+        let requset_packet = Packet::build_send_request(u16::MAX, u16::MAX);
+        requset_packet.send(&mut link).unwrap();
+
+        let mut request_scratchpad = Scratchpad::new();
+        let request_recv = Packet::receive(&mut link, None, 1000, &mut request_scratchpad).unwrap();
+        assert_eq!(request_recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(request_recv.get_sequence(), Sequence::Even);
+        match request_recv.get_content() {
+            PacketContent::SendRequest {
+                data_len,
+                session_num,
+            } => {
+                assert_eq!(data_len, u16::MAX);
+                assert_eq!(session_num, u16::MAX);
+            }
+            _ => panic!("SendRequest Error!"),
+        }
+
+        // Test for PacketContent::SendClearance
+        let clearance_packet = Packet::build_send_clearance(0);
+        clearance_packet.send(&mut link).unwrap();
+
+        let mut clearance_scratchpad = Scratchpad::new();
+        let clearance_recv =
+            Packet::receive(&mut link, None, 1000, &mut clearance_scratchpad).unwrap();
+        assert_eq!(clearance_recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(clearance_recv.get_sequence(), Sequence::Even);
+        match clearance_recv.get_content() {
+            PacketContent::SendClearance { session_num } => assert_eq!(session_num, 0),
+            _ => panic!("SendClearance Error!"),
+        }
+
+        // Test for PacketContent::Data Normal Data
+        let buffer = b"Hello, World!";
+        let data_packet = Packet::build_data(Sequence::Even, buffer);
+        let client_buf = &mut [0u8; 13];
+        data_packet.send(&mut link).unwrap();
+
+        let mut data_scratchpad = Scratchpad::new();
+        let data_recv =
+            Packet::receive(&mut link, Some(client_buf), 1000, &mut data_scratchpad).unwrap();
+        assert_eq!(data_recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(data_recv.get_sequence(), Sequence::Even);
+        match data_recv.get_content() {
+            PacketContent::Data { buffer } => assert_eq!(buffer.unwrap(), b"Hello, World!"),
+            _ => panic!("Data Error!"),
+        }
+
+        // Test for PacketContent::Data Ack
+        let ack_packet = Packet::build_ack(Sequence::Odd);
+        ack_packet.send(&mut link).unwrap();
+
+        let mut ack_scratchpad = Scratchpad::new();
+        let ack_recv = Packet::receive(&mut link, None, 1000, &mut ack_scratchpad).unwrap();
+        assert_eq!(ack_recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(ack_recv.get_sequence(), Sequence::Odd);
+        match ack_recv.get_content() {
+            PacketContent::Data { buffer } => assert!(buffer.is_none()),
+            _ => panic!("Ack Error!"),
+        }
+
+        // Test for PacketContent::Data Nack
+        let nack_packet = Packet::build_nack(Sequence::Odd);
+        nack_packet.send(&mut link).unwrap();
+
+        let mut nack_scratchpad = Scratchpad::new();
+        let nack_recv = Packet::receive(&mut link, None, 1000, &mut nack_scratchpad).unwrap();
+        assert_eq!(nack_recv.get_acknowledge(), Acknowledge::Nack);
+        assert_eq!(nack_recv.get_sequence(), Sequence::Odd);
+        match nack_recv.get_content() {
+            PacketContent::Data { buffer } => assert!(buffer.is_none()),
+            _ => panic!("Ack Error!"),
+        }
+
+        // Test for PacketContent::Reset
+        let reset_packet = Packet::build_reset();
+        reset_packet.send(&mut link).unwrap();
+
+        let mut reset_scratchpad = Scratchpad::new();
+        let reset_recv = Packet::receive(&mut link, None, 1000, &mut reset_scratchpad).unwrap();
+        assert_eq!(reset_recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(reset_recv.get_sequence(), Sequence::Even);
+        match reset_recv.get_content() {
+            PacketContent::Reset => (),
+            _ => panic!("Reset Error!"),
+        }
+    }
+
+    /// Simple Test: Test for received a data packet but no buffer was provided to store the data.
+    #[test]
+    fn no_buffer() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let buffer = b"No buffer provided!";
+        let packet = Packet::build_data(Sequence::Even, buffer);
+        packet.send(&mut link).unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+        let recv = Packet::receive(&mut link, None, 1000, &mut scratchpad);
+        match recv {
+            Err(PacketError::NoBuffer) => (),
+            _ => panic!("Should NoBuffer!"),
+        }
+    }
+
+    /// Simple Test: Test for client_buf is not enough to store the data.
+    #[test]
+    fn client_buf_not_enough() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let buffer = b"No enough client_buf!";
+        let packet = Packet::build_data(Sequence::Even, buffer);
+        let client_buf = &mut [0u8; 10];
+        packet.send(&mut link).unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+        let recv = Packet::receive(&mut link, Some(client_buf), 1000, &mut scratchpad);
+        match recv {
+            Err(PacketError::Clobbered) => (),
+            _ => panic!("Should Clobbered!"),
+        }
+    }
+
+    /// Simple Test: When `active_buf` contains checksum, we need to copy the last four bytes into the `crc_buf`.
+    #[test]
+    fn copy_crc_buf() {
+        let timer = DummyTimer;
+        let serial = LoopbackSerial::new();
+        let mut link = Link::new(serial, timer);
+
+        let packet = Packet::build_send_request(u16::MAX, u16::MAX);
+        let client_buf = &mut [0u8; 64];
+        packet.send(&mut link).unwrap();
+
+        let mut scratchpad = Scratchpad::new();
+        let recv = Packet::receive(&mut link, Some(client_buf), 1000, &mut scratchpad).unwrap();
+
+        assert_eq!(recv.get_acknowledge(), Acknowledge::Ack);
+        assert_eq!(recv.get_sequence(), Sequence::Even);
+        match recv.get_content() {
+            PacketContent::SendRequest {
+                data_len,
+                session_num,
+            } => {
+                assert_eq!(data_len, u16::MAX);
+                assert_eq!(session_num, u16::MAX);
+            }
+            _ => panic!("SendRequest Error!"),
+        }
     }
 }
