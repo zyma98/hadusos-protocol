@@ -418,13 +418,13 @@ where
 
 /// Unit tests for the [`link`](crate::link) module.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    /// A simulated timer that always return 0 as the timestamp. Thus when
+    /// A simulated timer that always returns 0 as the timestamp. Thus when
     /// using this timer the operations will never time out.
-    struct DummyTimer;
+    pub(crate) struct DummyTimer;
 
     impl Timer for DummyTimer {
         fn get_timestamp_ms(&mut self) -> u32 {
@@ -432,21 +432,46 @@ mod tests {
         }
     }
 
+    /// A simulated timer that returns 0 as the timestamp on the first call to `get_timestamp_ms()`,
+    /// and returns [`u32::MAX`] on subsequent calls.
+    pub(crate) struct DummyExpiringTimer {
+        is_first_call: bool,
+    }
+
+    impl DummyExpiringTimer {
+        pub(crate) fn new() -> Self {
+            Self {
+                is_first_call: true,
+            }
+        }
+    }
+
+    impl Timer for DummyExpiringTimer {
+        fn get_timestamp_ms(&mut self) -> u32 {
+            if self.is_first_call {
+                self.is_first_call = false;
+                0
+            } else {
+                u32::MAX
+            }
+        }
+    }
+
     /// A simulated loopback serial device. Bytes written to it can be read
     /// out again.
-    struct LoopbackSerial {
+    pub(crate) struct LoopbackSerial {
         buffer: VecDeque<u8>,
     }
 
     impl LoopbackSerial {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 buffer: VecDeque::new(),
             }
         }
 
         /// View bufferred data as a mutable slice.
-        fn get_buffer_data(&mut self) -> &mut [u8] {
+        pub(crate) fn get_buffer_data(&mut self) -> &mut [u8] {
             self.buffer.make_contiguous()
         }
     }
@@ -713,9 +738,9 @@ mod tests {
         assert_eq!(recv_len, 64);
     }
 
-    #[test]
     /// Simple Test: Receive data containing consecutive [`ESCAPE`], which
     /// should have the effect as a single [`ESCAPE`].
+    #[test]
     fn recv_multiple_escape() {
         let serial = LoopbackSerial::new();
         let timer = DummyTimer;
@@ -736,5 +761,25 @@ mod tests {
 
         assert_eq!(recv_len, 15);
         assert_eq!(&recv_buffer, b"Multiple ESCAPE");
+    }
+
+    /// Simple Test: Use [`DummyExpiringTimer`] to check whether
+    /// the timeout mechanism can function well.
+    #[test]
+    fn timeout() {
+        let serial = LoopbackSerial::new();
+        let timer = DummyExpiringTimer::new();
+        let mut link = Link::new(serial, timer);
+
+        link.serial.write_byte(PREAMBLE).unwrap();
+        link.serial.write_byte(POSTAMBLE).unwrap();
+
+        let mut recv_buffer = [0u8; 1];
+        let recv_res = link.receive_frame_with_timeout(&mut [&mut recv_buffer], 1000);
+
+        match recv_res {
+            Err(LinkError::Timeout) => (),
+            _ => panic!("Should Timeout!"),
+        }
     }
 }
