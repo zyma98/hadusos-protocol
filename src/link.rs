@@ -418,13 +418,13 @@ where
 
 /// Unit tests for the [`link`](crate::link) module.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
 
     /// A simulated timer that always returns 0 as the timestamp. Thus when
     /// using this timer the operations will never time out.
-    struct DummyTimer;
+    pub(crate) struct DummyTimer;
 
     impl Timer for DummyTimer {
         fn get_timestamp_ms(&mut self) -> u32 {
@@ -434,12 +434,12 @@ mod tests {
 
     /// A simulated timer that returns 0 as the timestamp on the first call to `get_timestamp_ms()`,
     /// and returns [`u32::MAX`] on subsequent calls.
-    struct DummyExpiringTimer {
+    pub(crate) struct DummyExpiringTimer {
         is_first_call: bool,
     }
 
     impl DummyExpiringTimer {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 is_first_call: true,
             }
@@ -459,19 +459,19 @@ mod tests {
 
     /// A simulated loopback serial device. Bytes written to it can be read
     /// out again.
-    struct LoopbackSerial {
+    pub(crate) struct LoopbackSerial {
         buffer: VecDeque<u8>,
     }
 
     impl LoopbackSerial {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 buffer: VecDeque::new(),
             }
         }
 
         /// View bufferred data as a mutable slice.
-        fn get_buffer_data(&mut self) -> &mut [u8] {
+        pub(crate) fn get_buffer_data(&mut self) -> &mut [u8] {
             self.buffer.make_contiguous()
         }
     }
@@ -763,7 +763,7 @@ mod tests {
         assert_eq!(&recv_buffer, b"Multiple ESCAPE");
     }
 
-    /// Simple Test: Use [`DummyExpiringTimer`] is check whether
+    /// Simple Test: Use [`DummyExpiringTimer`] to check whether
     /// the timeout mechanism can function well.
     #[test]
     fn timeout() {

@@ -880,77 +880,7 @@ impl<'a> Packet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serial::SerialError;
-    use std::collections::VecDeque;
-
-    /// A simulated timer that always returns 0 as the timestamp. Thus when
-    /// using this timer the operations will never time out.
-    struct DummyTimer;
-
-    impl Timer for DummyTimer {
-        fn get_timestamp_ms(&mut self) -> u32 {
-            0
-        }
-    }
-
-    /// A simulated timer that returns 0 as the timestamp on the first call to `get_timestamp_ms()`,
-    /// and returns [`u32::MAX`] on subsequent calls.
-    struct DummyExpiringTimer {
-        is_first_call: bool,
-    }
-
-    impl DummyExpiringTimer {
-        fn new() -> Self {
-            Self {
-                is_first_call: true,
-            }
-        }
-    }
-
-    impl Timer for DummyExpiringTimer {
-        fn get_timestamp_ms(&mut self) -> u32 {
-            if self.is_first_call {
-                self.is_first_call = false;
-                0
-            } else {
-                u32::MAX
-            }
-        }
-    }
-
-    /// A simulated loopback serial device. Bytes written to it can be read
-    /// out again.
-    struct LoopbackSerial {
-        buffer: VecDeque<u8>,
-    }
-
-    impl LoopbackSerial {
-        fn new() -> Self {
-            Self {
-                buffer: VecDeque::new(),
-            }
-        }
-    }
-
-    impl Serial for LoopbackSerial {
-        type ReadError = ();
-        type WriteError = ();
-
-        fn read_byte_with_timeout(
-            &mut self,
-            _timeout_ms: u32,
-        ) -> Result<u8, SerialError<Self::ReadError, Self::WriteError>> {
-            self.buffer.pop_front().ok_or(SerialError::ReadError(()))
-        }
-
-        fn write_byte(
-            &mut self,
-            byte: u8,
-        ) -> Result<(), SerialError<Self::ReadError, Self::WriteError>> {
-            self.buffer.push_back(byte);
-            Ok(())
-        }
-    }
+    use crate::link::tests::{DummyExpiringTimer, DummyTimer, LoopbackSerial};
 
     /// Simple Test: Send "Hello, World" and receive "Hello, World".
     #[test]
@@ -1013,7 +943,7 @@ mod tests {
         link.send_frame(&[
             &packet.header_to_le_bytes(),
             buffer,
-            &Packet::get_checksum(&[b"The quick brown box jumps over the lazy dog"]),
+            &Packet::get_checksum(&[b"The quick brown BOX jumps over the lazy dog"]),
         ])
         .unwrap();
 
@@ -1028,7 +958,7 @@ mod tests {
         }
     }
 
-    /// Simple Test: Test all kinds of PacketContent
+    /// Simple Test: Test all kinds of [`PacketContent`].
     #[test]
     fn packet_content() {
         let timer = DummyTimer;
@@ -1124,7 +1054,8 @@ mod tests {
         }
     }
 
-    /// Simple Test: Test for received a data packet but no buffer was provided to store the data.
+    /// Simple Test: Test for received a data packet but no buffer was provided
+    /// to store the data.
     #[test]
     fn no_buffer() {
         let timer = DummyTimer;
@@ -1163,7 +1094,8 @@ mod tests {
         }
     }
 
-    /// Simple Test: When `active_buf` contains checksum, we need to copy the last four bytes into the `crc_buf`.
+    /// Simple Test: When `active_buf` contains checksum, we need to copy the
+    /// last four bytes into the `crc_buf`.
     #[test]
     fn copy_crc_buf() {
         let timer = DummyTimer;
