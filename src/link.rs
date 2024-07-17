@@ -320,6 +320,7 @@ where
         // Wait until we see a preamble. Discard all previous bytes.
         loop {
             let remaining_timeout = update_timeout(&mut self.timer)?;
+
             if let ReadByteResult::Start =
                 self.read_byte_with_timeout_remove_escape(remaining_timeout)?
             {
@@ -435,25 +436,19 @@ pub(crate) mod tests {
     /// A simulated timer that returns 0 as the timestamp on the first call to `get_timestamp_ms()`,
     /// and returns [`u32::MAX`] on subsequent calls.
     pub(crate) struct DummyExpiringTimer {
-        is_first_call: bool,
+        timestamp: u32,
     }
 
     impl DummyExpiringTimer {
         pub(crate) fn new() -> Self {
-            Self {
-                is_first_call: true,
-            }
+            Self { timestamp: 0 }
         }
     }
 
     impl Timer for DummyExpiringTimer {
         fn get_timestamp_ms(&mut self) -> u32 {
-            if self.is_first_call {
-                self.is_first_call = false;
-                0
-            } else {
-                u32::MAX
-            }
+            self.timestamp = self.timestamp.saturating_add(1 << 20);
+            self.timestamp
         }
     }
 
