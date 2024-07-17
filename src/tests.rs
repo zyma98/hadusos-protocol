@@ -5,13 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-struct MockSerial {
+pub(crate) struct MockSerial {
     send: Sender<u8>,
     recv: Receiver<u8>,
 }
 
 impl MockSerial {
-    const fn new(send: Sender<u8>, recv: Receiver<u8>) -> Self {
+    pub const fn new(send: Sender<u8>, recv: Receiver<u8>) -> Self {
         Self { send, recv }
     }
 }
@@ -40,12 +40,12 @@ impl Serial for MockSerial {
     }
 }
 
-struct MockTimer {
+pub(crate) struct MockTimer {
     start: Instant,
 }
 
 impl MockTimer {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             start: Instant::now(),
         }
