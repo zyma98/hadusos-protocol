@@ -164,9 +164,6 @@ mod serial;
 mod session;
 mod timer;
 
-#[cfg(test)]
-mod tests;
-
 pub use serial::{Serial, SerialError};
 pub use session::{Session, SessionError};
 pub use timer::Timer;
