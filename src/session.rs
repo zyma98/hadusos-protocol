@@ -402,6 +402,7 @@ where
             // Will return timeout error here if the timeout set by client has
             // expired.
             let remaining_timeout = update_timeout(self.link.get_timer())?;
+
             // Wait for the clearance packet. Should timeout and try again
             // after the duration of RTO but not the potentially very long
             // timeout configured by the client.
@@ -939,17 +940,79 @@ where
 
 /// Unit tests for the [`session`](crate::session) module.
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
-    use crate::link::tests::{DummyExpiringTimer, LoopbackSerial};
-    use crate::tests::{MockSerial, MockTimer};
-    use crossbeam::channel;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
+    use crate::{
+        link::tests::{DummyExpiringTimer, LoopbackSerial},
+        serial::SerialError,
+    };
+    use crossbeam::channel::{self, Receiver, RecvError, SendError, Sender};
+    use std::{
+        sync::{Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
+    };
 
-    /// Send "Hello, World" and receive "Hello, World".
-    #[test]
-    fn hello_world() {
+    struct MockSerial {
+        send: Sender<u8>,
+        recv: Receiver<u8>,
+    }
+
+    impl MockSerial {
+        const fn new(send: Sender<u8>, recv: Receiver<u8>) -> Self {
+            Self { send, recv }
+        }
+    }
+
+    impl Serial for MockSerial {
+        type ReadError = RecvError;
+        type WriteError = SendError<u8>;
+
+        fn read_byte_with_timeout(
+            &mut self,
+            timeout_ms: u32,
+        ) -> Result<u8, SerialError<Self::ReadError, Self::WriteError>> {
+            self.recv
+                .recv_timeout(Duration::from_millis(timeout_ms as u64))
+                .map_err(|e| match e {
+                    channel::RecvTimeoutError::Timeout => SerialError::Timeout,
+                    channel::RecvTimeoutError::Disconnected => SerialError::ReadError(RecvError),
+                })
+        }
+
+        fn write_byte(
+            &mut self,
+            byte: u8,
+        ) -> Result<(), SerialError<Self::ReadError, Self::WriteError>> {
+            self.send.send(byte).map_err(|e| SerialError::WriteError(e))
+        }
+    }
+
+    struct MockTimer {
+        start: Instant,
+    }
+
+    impl MockTimer {
+        fn new() -> Self {
+            Self {
+                start: Instant::now(),
+            }
+        }
+    }
+
+    impl Timer for MockTimer {
+        fn get_timestamp_ms(&mut self) -> u32 {
+            self.start.elapsed().as_millis() as u32
+        }
+    }
+
+    /// Use a pair of mock serials and timers to run the provided client and
+    /// server code.
+    fn run_with_mock_serial_and_timer<F0, F1>(client: F0, server: F1)
+    where
+        F0: FnOnce(&mut Session<MockSerial, MockTimer>) + Send + Sync + 'static,
+        F1: FnOnce(&mut Session<MockSerial, MockTimer>) + Send + Sync + 'static,
+    {
         let (send0, recv1) = channel::unbounded();
         let (send1, recv0) = channel::unbounded();
 
@@ -962,9 +1025,22 @@ mod test {
         let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
         let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
 
+        // Keep positive reference counts for the channels for the duration of
+        // the test execution. Channel operations will return error if one end
+        // of the channel is dropped.
         let _trans0_cloned = Arc::clone(&trans0);
         let _trans1_cloned = Arc::clone(&trans1);
 
+        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
+        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
+
+        t0.join().unwrap();
+        t1.join().unwrap();
+    }
+
+    /// Send "Hello, World" and receive "Hello, World".
+    #[test]
+    fn hello_world() {
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             let msg = b"Hello, World!";
             trans.send(msg, 1000).unwrap();
@@ -978,53 +1054,7 @@ mod test {
             assert_eq!(buf.as_ref(), b"Hello, World!");
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
-    }
-
-    /// Trigger [`SessionError::Timeout`].
-    #[test]
-    fn timeout() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = DummyExpiringTimer::new();
-        let timer1 = DummyExpiringTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
-        fn client(trans: &mut Session<MockSerial, DummyExpiringTimer>) {
-            let msg = b"Hello, World!";
-            let res = trans.send(msg, 1000);
-            match res {
-                Err(SessionError::Timeout) => (),
-                _ => panic!("Expected Timeout error, Found {:?}", res),
-            }
-        }
-
-        fn server(trans: &mut Session<MockSerial, DummyExpiringTimer>) {
-            let res = trans.listen(1000);
-            match res {
-                Err(SessionError::Timeout) => (),
-                _ => panic!("Expected Timeout error, Found {:?}", res),
-            }
-        }
-
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Trigger [`SessionError::NotClearToSend`].
@@ -1060,21 +1090,6 @@ mod test {
     /// Trigger [`SessionError::BufferSizeMismatch`].
     #[test]
     fn buffer_size_mismatch() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             let msg = b"Hello, World!";
             trans.send(msg, 1000).unwrap_or_default();
@@ -1090,31 +1105,12 @@ mod test {
             }
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Trigger [`SessionError::NotAcknowledged`].
     #[test]
     fn not_acknowledged() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             let msg = b"Hello, World!";
             let res = trans.send(msg, 1000);
@@ -1140,31 +1136,12 @@ mod test {
                 .unwrap();
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Trigger [`SessionError::OutOfSync`].
     #[test]
     fn out_of_sync() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             Packet::build_send_request(10, trans.rx_session_num)
                 .send(&mut trans.link)
@@ -1184,31 +1161,12 @@ mod test {
             }
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Trigger [`SessionError::Reset`].
     #[test]
     fn reset() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             Packet::build_send_request(10, trans.rx_session_num)
                 .send(&mut trans.link)
@@ -1226,29 +1184,13 @@ mod test {
             }
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Send data with length from 1 to 256, with a known data pattern. The
     /// receiver should correctly receive the data with any length from 1 to 256.
     #[test]
     fn data_length_1_to_256() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
         fn client(trans: &mut Session<MockSerial, MockTimer>, msg: &[u8]) {
             trans.send(msg, 1000).unwrap();
         }
@@ -1261,40 +1203,19 @@ mod test {
         }
 
         for len in 0..=255 {
-            let trans0_cloned = Arc::clone(&trans0);
-            let trans1_cloned = Arc::clone(&trans1);
-
             let msg0: Vec<u8> = (0..=len).collect();
             let msg1 = msg0.clone();
 
-            let t0 =
-                thread::spawn(move || client(&mut *trans0_cloned.lock().unwrap(), msg0.as_ref()));
-            let t1 =
-                thread::spawn(move || server(&mut *trans1_cloned.lock().unwrap(), msg1.as_ref()));
-
-            t0.join().unwrap();
-            t1.join().unwrap();
+            run_with_mock_serial_and_timer(
+                move |trans| client(trans, &msg0),
+                move |trans| server(trans, &msg1),
+            )
         }
     }
 
     /// Letting the sender and receiver change their role.
     #[test]
     fn role_reversal() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             let msg = b"Hello, Receiver!";
             trans.send(msg, 1000).unwrap();
@@ -1317,31 +1238,12 @@ mod test {
             trans.send(msg, 1000).unwrap();
         }
 
-        let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
-        let t1 = thread::spawn(move || server(&mut *trans1.lock().unwrap()));
-
-        t0.join().unwrap();
-        t1.join().unwrap();
+        run_with_mock_serial_and_timer(client, server)
     }
 
     /// Letting the sender send multiple times.
     #[test]
     fn send_multiple_times() {
-        let (send0, recv1) = channel::unbounded();
-        let (send1, recv0) = channel::unbounded();
-
-        let serial0 = MockSerial::new(send0, recv0);
-        let serial1 = MockSerial::new(send1, recv1);
-
-        let timer0 = MockTimer::new();
-        let timer1 = MockTimer::new();
-
-        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
-        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
-
-        let _trans0_cloned = Arc::clone(&trans0);
-        let _trans1_cloned = Arc::clone(&trans1);
-
         fn client(trans: &mut Session<MockSerial, MockTimer>) {
             let msg = b"Hello, First Message!";
             trans.send(msg, 1000).unwrap();
@@ -1362,6 +1264,44 @@ mod test {
             trans.receive(&mut buf, 10000).unwrap();
 
             assert_eq!(buf.as_ref(), b"Hello, Second Message!");
+        }
+
+        run_with_mock_serial_and_timer(client, server)
+    }
+
+    /// Trigger [`SessionError::Timeout`].
+    #[test]
+    fn timeout() {
+        let (send0, recv1) = channel::unbounded();
+        let (send1, recv0) = channel::unbounded();
+
+        let serial0 = MockSerial::new(send0, recv0);
+        let serial1 = MockSerial::new(send1, recv1);
+
+        let timer0 = DummyExpiringTimer::new();
+        let timer1 = DummyExpiringTimer::new();
+
+        let trans0 = Arc::new(Mutex::new(Session::new(serial0, timer0)));
+        let trans1 = Arc::new(Mutex::new(Session::new(serial1, timer1)));
+
+        let _trans0_cloned = Arc::clone(&trans0);
+        let _trans1_cloned = Arc::clone(&trans1);
+
+        fn client(trans: &mut Session<MockSerial, DummyExpiringTimer>) {
+            let msg = b"Hello, World!";
+            let res = trans.send(msg, 1000);
+            match res {
+                Err(SessionError::Timeout) => (),
+                _ => panic!("Expected Timeout error, Found {:?}", res),
+            }
+        }
+
+        fn server(trans: &mut Session<MockSerial, DummyExpiringTimer>) {
+            let res = trans.listen(1000);
+            match res {
+                Err(SessionError::Timeout) => (),
+                _ => panic!("Expected Timeout error, Found {:?}", res),
+            }
         }
 
         let t0 = thread::spawn(move || client(&mut *trans0.lock().unwrap()));
